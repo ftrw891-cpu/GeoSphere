@@ -13,8 +13,12 @@ create table if not exists public.profiles (
   st         text not null default 'Menunggu aktivasi',   -- Menunggu aktivasi | Aktif | Nonaktif
   kelas      text not null default '-',
   role       text not null default 'siswa' check (role in ('siswa','admin')),
+  order_no   text not null default '',                  -- nomor pesanan Shopee
   created_at timestamptz not null default now()
 );
+alter table public.profiles add column if not exists order_no text not null default '';
+-- satu nomor pesanan hanya boleh dipakai satu akun
+create unique index if not exists profiles_order_uq on public.profiles (order_no) where order_no <> '';
 
 create table if not exists public.user_data (          -- progres belajar tiap siswa
   user_id    uuid primary key references auth.users(id) on delete cascade,
@@ -34,6 +38,12 @@ create table if not exists public.public_scores (      -- untuk papan peringkat
   kelas      text,
   earned     integer not null default 0,
   pts        integer not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.public_info (        -- info publik (link toko Shopee), boleh dibaca siapa saja
+  key        text primary key,
+  value      jsonb not null,
   updated_at timestamptz not null default now()
 );
 
@@ -57,13 +67,14 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email, nama, paket)
+  insert into public.profiles (id, email, nama, paket, order_no)
   values (
     new.id,
     new.email,
     coalesce(left(new.raw_user_meta_data->>'nama', 80), ''),
     case when new.raw_user_meta_data->>'paket' in ('basic','pro','ai')
-         then new.raw_user_meta_data->>'paket' else 'basic' end
+         then new.raw_user_meta_data->>'paket' else 'basic' end,
+    coalesce(left(trim(new.raw_user_meta_data->>'order'), 40), '')
   )
   on conflict (id) do nothing;
   return new;
@@ -80,6 +91,7 @@ alter table public.profiles      enable row level security;
 alter table public.user_data     enable row level security;
 alter table public.app_state     enable row level security;
 alter table public.public_scores enable row level security;
+alter table public.public_info   enable row level security;
 
 -- profiles: siswa hanya melihat profilnya sendiri; hanya admin yang boleh mengubah
 drop policy if exists profiles_select on public.profiles;
@@ -126,6 +138,13 @@ create policy scores_update on public.public_scores for update to authenticated
 drop policy if exists scores_delete_admin on public.public_scores;
 create policy scores_delete_admin on public.public_scores for delete to authenticated
   using (public.is_admin());
+
+-- public_info: siapa saja (termasuk calon pendaftar) boleh membaca; hanya admin yang menulis
+drop policy if exists info_select on public.public_info;
+create policy info_select on public.public_info for select to anon, authenticated using (true);
+drop policy if exists info_write_admin on public.public_info;
+create policy info_write_admin on public.public_info for all to authenticated
+  using (public.is_admin()) with check (public.is_admin());
 
 -- 5) JADIKAN DIRI ANDA ADMIN -------------------------------------
 -- Langkah: (a) daftar dulu di web Geosphere dengan email admin Anda,
